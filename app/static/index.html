@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MIME Multipart 报文检查器</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">▥</span>
+    <div>
+      <h1>MIME Multipart 报文检查器</h1>
+      <p class="sub">RFC 2045/2046 · 嵌套 multipart · Content-Transfer-Encoding · quoted 参数 · CRLF 边界 · 编辑后重新编码</p>
+    </div>
+  </div>
+  <div class="topbar-actions">
+    <button id="btnSampleBasic" class="btn btn-ghost" type="button">示例：表单</button>
+    <button id="btnSampleNested" class="btn btn-ghost" type="button">示例：嵌套</button>
+    <button id="btnSampleBad" class="btn btn-ghost" type="button">示例：错误报文</button>
+  </div>
+</header>
+
+<main>
+  <section class="card" id="inputCard">
+    <div class="card-head">
+      <h2>1. 输入报文</h2>
+      <div class="hint">可粘贴完整 MIME 报文（含顶层头部）或仅 multipart body；支持自动识别。</div>
+    </div>
+
+    <div class="form-row">
+      <label for="contentTypeInput">Content-Type（可选，留空则从报文头部读取）</label>
+      <input id="contentTypeInput" type="text" spellcheck="false"
+             placeholder='multipart/mixed; boundary="BOUNDARY-42"'>
+    </div>
+    <div class="form-row two-col">
+      <div>
+        <label for="boundaryInput">boundary（可选，覆盖参数；可带引号）</label>
+        <input id="boundaryInput" type="text" spellcheck="false" placeholder="BOUNDARY-42">
+      </div>
+      <div class="effective-box">
+        <label>解析时生效的 boundary</label>
+        <code id="effectiveBoundary">—</code>
+      </div>
+    </div>
+
+    <label for="rawInput" class="ta-label">原始报文</label>
+    <textarea id="rawInput" spellcheck="false" wrap="off"
+      placeholder="Content-Type: multipart/form-data; boundary=----WebKitFormBoundary&#10;&#10;------WebKitFormBoundary&#10;Content-Disposition: form-data; name=&quot;field1&quot;&#10;&#10;value1&#10;------WebKitFormBoundary--"></textarea>
+
+    <div class="actions">
+      <button id="btnParse" class="btn btn-primary" type="button">解析报文</button>
+      <span id="parseMeta" class="parse-meta"></span>
+    </div>
+  </section>
+
+  <section class="card hidden" id="issuesCard">
+    <div class="card-head">
+      <h2>解析诊断</h2>
+      <div class="issue-filters">
+        <button class="chip chip-error active" data-level="error" type="button">错误 <b id="cntError">0</b></button>
+        <button class="chip chip-warning active" data-level="warning" type="button">警告 <b id="cntWarning">0</b></button>
+        <button class="chip chip-info active" data-level="info" type="button">提示 <b id="cntInfo">0</b></button>
+      </div>
+    </div>
+    <ul id="issuesList" class="issues"></ul>
+  </section>
+
+  <section class="card hidden" id="treeCard">
+    <div class="card-head">
+      <h2>2. 报文结构（可编辑）</h2>
+      <div class="head-actions">
+        <button id="btnSaveA" class="btn btn-sm" type="button">存为样本 A</button>
+        <button id="btnSaveB" class="btn btn-sm" type="button">存为样本 B</button>
+      </div>
+    </div>
+    <div class="hint tree-hint">直接修改头部、正文、boundary、preamble/epilogue；叶子节点可切换 Content-Transfer-Encoding（base64 / quoted-printable 等）。未改动的节点按原字节还原。</div>
+    <div id="treeRoot"></div>
+
+    <div class="encode-bar">
+      <label class="check">
+        <input type="checkbox" id="includeHeaders" checked>
+        编码时包含顶层头部（取消勾选则仅输出 multipart body）
+      </label>
+      <button id="btnEncode" class="btn btn-primary" type="button">重新编码并下载</button>
+    </div>
+  </section>
+
+  <section class="card hidden" id="attachmentsCard">
+    <div class="card-head">
+      <h2>3. 附件提取</h2>
+      <div class="head-actions">
+        <span id="attachMeta" class="parse-meta"></span>
+        <button id="btnRefreshAttach" class="btn btn-sm" type="button">刷新列表</button>
+      </div>
+    </div>
+    <div class="hint">递归列出带 <code>Content-Disposition: attachment</code> 或 <code>filename</code>
+      / <code>filename*</code> 参数的叶子。文件名遵循 RFC 2231（扩展值优先，非法时回退普通值）；
+      ZIP 内为 CTE 解码后的字节，已编辑叶子取编辑后的内容。畸形或未知 CTE 的未编辑叶子无法导出。</div>
+    <ul id="attachList" class="attach-list"></ul>
+    <div class="attach-bar">
+      <label class="check">
+        <input type="checkbox" id="attachSelectAll" checked>
+        全选可导出附件
+      </label>
+      <button id="btnDownloadZip" class="btn btn-primary" type="button">打包所选并下载 ZIP</button>
+    </div>
+  </section>
+
+  <section class="card hidden" id="outputCard">
+    <div class="card-head">
+      <h2>4. 重新编码结果</h2>
+      <div id="encodeMeta" class="parse-meta"></div>
+    </div>
+    <ul id="encodeIssues" class="issues compact"></ul>
+    <div class="output-actions">
+      <button id="btnDownload" class="btn btn-primary" type="button">下载文件</button>
+      <button id="btnCopy" class="btn" type="button">复制为文本</button>
+      <input id="filenameInput" type="text" class="filename" spellcheck="false" value="message.eml">
+      <label class="check">
+        <input type="checkbox" id="showOutput">
+        查看编码文本
+      </label>
+    </div>
+    <textarea id="outputPreview" class="hidden" spellcheck="false" wrap="off" readonly></textarea>
+  </section>
+
+  <section class="card" id="compareCard">
+    <div class="card-head">
+      <h2>5. 样本对比</h2>
+      <div class="hint">把解析结果分别存为样本 A / B（保存在浏览器 localStorage，可来自不同报文或编辑前后），按树路径对齐比较媒体类型、头部、正文编码、boundary、序言/尾注与诊断代码。</div>
+    </div>
+
+    <div class="sample-slots">
+      <div class="slot" id="slotA">
+        <div class="slot-head">
+          <span class="slot-badge badge-a">A</span>
+          <span class="slot-title">样本 A</span>
+          <span class="node-spacer"></span>
+          <button class="btn btn-sm btn-danger slot-clear" data-slot="a" type="button">清除</button>
+        </div>
+        <div class="slot-meta">空 — 解析报文后点击「存为样本 A」</div>
+      </div>
+      <div class="slot" id="slotB">
+        <div class="slot-head">
+          <span class="slot-badge badge-b">B</span>
+          <span class="slot-title">样本 B</span>
+          <span class="node-spacer"></span>
+          <button class="btn btn-sm btn-danger slot-clear" data-slot="b" type="button">清除</button>
+        </div>
+        <div class="slot-meta">空 — 解析报文后点击「存为样本 B」</div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button id="btnCompare" class="btn btn-primary" type="button" disabled>开始对比</button>
+      <button id="btnExportDiff" class="btn" type="button" disabled>导出 JSON 差异报告</button>
+      <span id="diffMeta" class="parse-meta"></span>
+    </div>
+
+    <div id="diffResult" class="hidden">
+      <div class="diff-filters">
+        <button class="chip chip-added active" data-change="added" type="button">新增 <b id="cntAdded">0</b></button>
+        <button class="chip chip-removed active" data-change="removed" type="button">删除 <b id="cntRemoved">0</b></button>
+        <button class="chip chip-modified active" data-change="modified" type="button">修改 <b id="cntModified">0</b></button>
+        <button class="chip chip-unchanged" data-change="unchanged" type="button">未变化 <b id="cntUnchanged">0</b></button>
+      </div>
+      <ul id="diffList" class="diff-list"></ul>
+      <div class="diff-trees">
+        <div class="diff-tree-panel">
+          <div class="diff-tree-title">样本 A 结构（点击差异条目的 A 按钮定位）</div>
+          <div id="diffTreeA"></div>
+        </div>
+        <div class="diff-tree-panel">
+          <div class="diff-tree-title">样本 B 结构（点击差异条目的 B 按钮定位）</div>
+          <div id="diffTreeB"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  字节级解析：CRLF 行结束符 · <code>--boundary</code> / <code>--boundary--</code> 定界 ·
+  <code>quoted-string</code> 参数与 <code>\</code> 转义 · 递归 multipart
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
