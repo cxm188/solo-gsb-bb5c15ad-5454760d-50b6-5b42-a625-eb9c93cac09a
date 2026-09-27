@@ -708,5 +708,155 @@ check("递归发现嵌套附件",
       == [("parts[0].parts[0]", "deep.dat")],
       [(a["path"], a["zipName"]) for a in la_n["attachments"]])
 
+# 19. CID 引用检查 -----------------------------------------------------------
+print("19) CID 引用检查")
+from app import cidcheck
+
+# 规范化原语
+check("Content-ID 去首尾空白与外层尖括号",
+      cidcheck.normalize_content_id("  <ab@c> ") == "ab@c"
+      and cidcheck.normalize_content_id("plain@x") == "plain@x")
+check("引用百分号只解码一次（%2540 -> %40，不再解码为 @）",
+      cidcheck.normalize_reference("cid:a%2540b") == "a%40b")
+check("cid 方案名不区分大小写", cidcheck.normalize_reference("CID:Xy") == "Xy")
+refs = cidcheck.extract_cid_refs('<A HREF="CID:Up@x">x</A><img SRC="cid:lo@x">'
+                                 '<script src="cid:js@x"></script>')
+check("src/href 均提取且记录标签与属性",
+      [(r["tag"], r["attribute"], r["reference"]) for r in refs]
+      == [("a", "href", "CID:Up@x"), ("img", "src", "cid:lo@x"),
+          ("script", "src", "cid:js@x")], refs)
+check("非 cid 引用不提取",
+      cidcheck.extract_cid_refs('<img src="https://x/y.png"><a href="#f">') == [])
+
+# 基本匹配：尖括号/空白规范化、百分号解码、缺失、重复歧义、大小写敏感
+raw19 = (
+    b'Content-Type: multipart/related; boundary=REL\r\n\r\n'
+    b'--REL\r\nContent-Type: text/html; charset=utf-8\r\n\r\n'
+    b'<html><body>'
+    b'<img src="cid:logo@example.com">'
+    b'<a href="cid:doc%40example.com">doc</a>'
+    b'<img src="cid:missing@x">'
+    b'<img src="cid:dup@x">'
+    b'<img src="cid:Case@x">'
+    b'</body></html>\r\n'
+    b'--REL\r\nContent-Type: image/png\r\n'
+    b'Content-ID: <logo@example.com>\r\n\r\nPNG\r\n'
+    b'--REL\r\nContent-Type: text/plain\r\n'
+    b'Content-ID:   <doc@example.com>  \r\n\r\ndoc\r\n'
+    b'--REL\r\nContent-Type: application/octet-stream\r\n'
+    b'Content-ID: <dup@x>\r\n\r\none\r\n'
+    b'--REL\r\nContent-Type: application/octet-stream\r\n'
+    b'Content-ID: dup@x\r\n\r\ntwo\r\n'
+    b'--REL\r\nContent-Type: application/octet-stream\r\n'
+    b'Content-ID: <case@x>\r\n\r\ncase\r\n'
+    b'--REL--'
+)
+r19 = mime.parse_message(raw19.decode(), None, None)
+res19 = cidcheck.check_cid_references(r19["tree"])
+check("CID 检查 ok", res19["ok"] is True)
+check("发现 1 个 HTML 叶子", res19["htmlCount"] == 1, res19["htmlCount"])
+check("提取 5 条 cid 引用", res19["refCount"] == 5, res19["refCount"])
+by_ref = {e["reference"]: e for e in res19["entries"]}
+e = by_ref["cid:logo@example.com"]
+check("尖括号 Content-ID 唯一匹配", e["status"] == "ok"
+      and e["candidates"][0]["path"] == "parts[1]", e)
+check("作用域为最近的 related（root）", e["scopePath"] == "root", e)
+e = by_ref["cid:doc%40example.com"]
+check("百分号解码一次 + 空白/尖括号规范化后匹配",
+      e["status"] == "ok" and e["identifier"] == "doc@example.com"
+      and e["candidates"][0]["path"] == "parts[2]", e)
+e = by_ref["cid:missing@x"]
+check("缺失引用报 missing 且无候选", e["status"] == "missing"
+      and e["candidates"] == [], e)
+e = by_ref["cid:dup@x"]
+check("重复 Content-ID 报歧义且不默认选取",
+      e["status"] == "ambiguous" and len(e["candidates"]) == 2, e)
+check("作用域清单标记重复 Content-ID",
+      any(c.get("duplicate") for s in res19["scopes"] for c in s["contentIds"]
+          if c["contentId"] == "dup@x"), res19["scopes"])
+e = by_ref["cid:Case@x"]
+check("标识符区分大小写", e["status"] == "missing", e)
+check("summary 计数正确",
+      res19["summary"] == {"ok": 2, "missing": 2, "ambiguous": 1, "noScope": 0},
+      res19["summary"])
+
+# 嵌套 related：父作用域排除嵌套子树；内层 HTML 使用最近的 related
+raw19b = (
+    b'Content-Type: multipart/related; boundary=OUT\r\n\r\n'
+    b'--OUT\r\nContent-Type: text/html\r\n\r\n'
+    b'<img src="cid:inner@x"><img src="cid:outer@x">\r\n'
+    b'--OUT\r\nContent-Type: application/octet-stream\r\n'
+    b'Content-ID: <outer@x>\r\n\r\no\r\n'
+    b'--OUT\r\nContent-Type: multipart/related; boundary=INN\r\n\r\n'
+    b'--INN\r\nContent-Type: text/html\r\n\r\n'
+    b'<img src="cid:inner@x">\r\n'
+    b'--INN\r\nContent-Type: application/octet-stream\r\n'
+    b'Content-ID: <inner@x>\r\n\r\ni\r\n'
+    b'--INN--\r\n'
+    b'--OUT--'
+)
+r19b = mime.parse_message(raw19b.decode(), None, None)
+res19b = cidcheck.check_cid_references(r19b["tree"])
+ents = {(e["sourcePath"], e["identifier"]): e for e in res19b["entries"]}
+e = ents[("parts[0]", "inner@x")]
+check("嵌套 related 子树被排除出父作用域",
+      e["status"] == "missing" and e["scopePath"] == "root", e)
+check("外层引用正常匹配", ents[("parts[0]", "outer@x")]["status"] == "ok")
+e = ents[("parts[2].parts[0]", "inner@x")]
+check("内层 HTML 使用最近的 related 作用域",
+      e["status"] == "ok" and e["scopePath"] == "parts[2]"
+      and e["candidates"][0]["path"] == "parts[2].parts[1]", e)
+
+# 无 multipart/related 祖先 -> 无作用域
+raw19c = (
+    b'Content-Type: multipart/mixed; boundary=MIX\r\n\r\n'
+    b'--MIX\r\nContent-Type: text/html\r\n\r\n'
+    b'<img src="cid:a@b">\r\n'
+    b'--MIX\r\nContent-Type: application/octet-stream\r\n'
+    b'Content-ID: <a@b>\r\n\r\nx\r\n'
+    b'--MIX--'
+)
+r19c = mime.parse_message(raw19c.decode(), None, None)
+res19c = cidcheck.check_cid_references(r19c["tree"])
+check("无 related 祖先报无作用域",
+      res19c["entries"][0]["status"] == "no-scope"
+      and res19c["entries"][0]["scopePath"] is None, res19c["entries"])
+
+# 非合法 UTF-8 的 text/html -> 无法检查
+html_bin = b'<img src="cid:a@b">\xff\xfe'
+raw19d = (
+    b'Content-Type: multipart/related; boundary=R2\r\n\r\n'
+    b'--R2\r\nContent-Type: text/html\r\n'
+    b'Content-Transfer-Encoding: base64\r\n\r\n'
+    + base64.b64encode(html_bin) + b'\r\n'
+    b'--R2--'
+)
+r19d = mime.parse_message(None, None, None,
+                          raw_base64=base64.b64encode(raw19d).decode())
+res19d = cidcheck.check_cid_references(r19d["tree"])
+check("非 UTF-8 HTML 报无法检查",
+      res19d["uncheckableCount"] == 1
+      and res19d["htmlParts"][0]["checkable"] is False
+      and res19d["refCount"] == 0, res19d["htmlParts"])
+
+# 按当前头部判断：编辑 Content-ID 头后重查结果随之更新
+t19 = r19["tree"]
+cid_h = next(h for h in t19["parts"][1]["headers"]
+             if h["name"].lower() == "content-id")
+cid_h["value"] = "<renamed@example.com>"
+res19e = cidcheck.check_cid_references(t19)
+by_ref_e = {e["reference"]: e for e in res19e["entries"]}
+check("按当前头部判断 Content-ID（编辑后重查）",
+      by_ref_e["cid:logo@example.com"]["status"] == "missing",
+      by_ref_e["cid:logo@example.com"])
+
+# 正文从编辑通道还原：编辑 HTML 正文后重查引用消失
+t19x = mime.parse_message(raw19.decode(), None, None)["tree"]
+t19x["parts"][0]["body"] = "<p>no refs</p>"
+t19x["parts"][0]["bodyEdited"] = True
+res19x = cidcheck.check_cid_references(t19x)
+check("编辑正文后重查更新（编辑通道还原字节）",
+      res19x["refCount"] == 0, res19x["refCount"])
+
 print(f"\n结果: {PASS} 通过, {FAIL} 失败")
 sys.exit(1 if FAIL else 0)

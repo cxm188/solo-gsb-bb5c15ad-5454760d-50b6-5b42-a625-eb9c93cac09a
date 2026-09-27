@@ -35,6 +35,16 @@
   按节点路径命名；文件名中的路径分隔符与控制字符被清除，重名按遍历顺序加序号。
   ZIP 使用 **CTE 解码后的字节**（已编辑叶子取编辑后内容）；畸形或未知
   Content-Transfer-Encoding 的**未编辑**叶子禁止导出并说明原因。
+- 🔗 **CID 引用检查**：编辑树旁的面板（`POST /api/cid-check`）提取
+  `text/html` 叶子 `src` / `href` 中的 `cid:` 引用（标准库 HTMLParser
+  纯文本解析，**不执行脚本、不加载任何资源**），并在**最近的
+  `multipart/related` 祖先**作用域内按 Content-ID 匹配（嵌套 related
+  子树被排除）。Content-ID 去首尾空白与外层尖括号，引用去 `cid:` 前缀后
+  百分号解码一次，标识符**区分大小写**；每条引用显示来源路径、原始引用、
+  作用域、候选路径与**唯一匹配 / 缺失 / 重复歧义**（歧义时列出全部候选，
+  不默认选取）。类型与 Content-ID 按**当前头部**判断，HTML 正文从编辑通道
+  还原字节，仅合法 UTF-8 的 HTML 参与检查（其他报“无法检查”），无 related
+  祖先时报“无作用域”；编辑或增删后自动重查。
 
 ---
 
@@ -115,7 +125,17 @@ http://localhost:8000/docs 。
      内容；未编辑叶子若处于 `malformed`（畸形 base64/QP）或
      `passthrough`（未知 CTE）状态则**无法勾选**，并显示具体原因——
      在结构树中编辑该节点后即变为可导出。
-8. **样本对比**（页面底部「5. 样本对比」卡片）：
+8. **CID 引用检查**（「2. 报文结构」右侧的面板，解析后自动运行）：
+   - 点击 **检查 CID 引用** 使用**当前编辑树**重新检查；编辑正文/头部、
+     增删部分或切换 CTE 后会自动重查更新；
+   - 类型与 Content-ID 按节点**当前头部**判断，HTML 正文从编辑通道还原
+     字节；仅合法 UTF-8 的 `text/html` 叶子参与提取，其他 HTML 叶子标记
+     “无法检查”；只读取 `src`/`href` 属性中的 `cid:` 引用，不执行脚本、
+     不加载任何资源；
+   - 每条引用显示来源路径、原始引用、规范化标识符、作用域路径与候选路径，
+     结果为 **唯一匹配 / 缺失 / 重复歧义 / 无作用域** 之一；重复歧义列出
+     全部候选，不默认选取；面板底部可展开查看各作用域的 Content-ID 清单。
+9. **样本对比**（页面底部「5. 样本对比」卡片）：
    - 解析一份报文后点击结构区右上角的 **存为样本 A**；再解析（或编辑后重新解析）
      另一份报文，点击 **存为样本 B**。样本保存在浏览器 localStorage，刷新不丢失；
    - 点击 **开始对比**，查看按树路径对齐的差异清单（新增 / 删除 / 修改 / 未变化，
@@ -401,6 +421,61 @@ DEFLATE 压缩；非 ASCII 文件名置 UTF-8 语言编码标志位）：
 （`EMPTY_SELECTION`）、路径在当前树中不存在（`STALE_PATHS`）或所选节点
 当前不可导出（`NOT_EXPORTABLE`）时返回 `400` 与 JSON 错误体。
 
+### `POST /api/cid-check`
+
+CID 引用检查：接收当前树（与 `/api/encode` 相同的 `tree`），提取合法
+UTF-8 `text/html` 叶子中 `src`/`href` 的 `cid:` 引用（纯文本解析，不加载
+资源），并在**最近的 `multipart/related` 祖先**作用域内按 Content-ID 匹配
+（嵌套 related 子树被排除出父作用域）。
+
+请求：
+
+```json
+{ "tree": { /* /api/parse 返回的 tree，可修改 */ } }
+```
+
+响应（节选）：
+
+```json
+{
+  "ok": true,
+  "htmlCount": 1,
+  "uncheckableCount": 0,
+  "refCount": 2,
+  "summary": { "ok": 1, "missing": 1, "ambiguous": 0, "noScope": 0 },
+  "entries": [
+    {
+      "sourcePath": "parts[0]",
+      "tag": "img",
+      "attribute": "src",
+      "reference": "cid:logo%40example.com",
+      "identifier": "logo@example.com",
+      "scopePath": "root",
+      "candidates": [ { "path": "parts[1]", "contentId": "logo@example.com" } ],
+      "status": "ok"
+    }
+  ],
+  "htmlParts": [ { "path": "parts[0]", "checkable": true, "refCount": 2 } ],
+  "scopes": [
+    { "path": "root",
+      "contentIds": [ { "path": "parts[1]", "contentId": "logo@example.com" } ] }
+  ]
+}
+```
+
+规则要点：
+
+- 类型与 Content-ID 按节点**当前头部**判断；HTML 正文从编辑通道
+  （`body`/`bodyEncoding`）还原字节，仅合法 UTF-8 的 `text/html` 被解析，
+  其余在 `htmlParts` 中标记 `checkable: false` 并给出原因；
+- `status`：`ok`（唯一匹配）/ `missing`（缺失，`candidates` 为空）/
+  `ambiguous`（重复歧义，`candidates` 列出全部且**不默认选取**）/
+  `no-scope`（无 `multipart/related` 祖先，`scopePath` 为 `null`）；
+- Content-ID 去首尾空白与外层一对尖括号；引用去 `cid:` 前缀（方案名不区分
+  大小写）后百分号解码一次（`%2540` → `%40`）；标识符**区分大小写**；
+- `scopes[].contentIds` 列出各作用域内全部 Content-ID，`duplicate: true`
+  表示该标识符在作用域内重复。
+
 ### `GET /api/health`
 
 返回 `{"ok": true}`，供容器健康检查使用。
@@ -413,9 +488,10 @@ DEFLATE 压缩；非 ASCII 文件名置 UTF-8 语言编码标志位）：
 .
 ├── app/
 │   ├── __init__.py
-│   ├── main.py              # FastAPI 应用、/api/parse、/api/encode、/api/diff、/api/attachments、静态文件
+│   ├── main.py              # FastAPI 应用、/api/parse、/api/encode、/api/diff、/api/attachments、/api/cid-check、静态文件
 │   ├── mime.py              # 零第三方依赖的 MIME 解析 / 重新编码核心
 │   ├── attachments.py       # RFC 2231 文件名解析、附件发现与 ZIP 打包（标准库 zipfile）
+│   ├── cidcheck.py          # CID 引用检查：cid: 引用提取与 multipart/related 作用域匹配
 │   ├── diff.py              # 样本对比：按树路径对齐的字段级差异计算
 │   └── static/
 │       ├── index.html       # 页面结构
@@ -448,7 +524,11 @@ Content-Transfer-Encoding（base64 / quoted-printable / 7bit / 8bit / binary
 RFC 2231 `filename*` 单值与 `filename*0*` 分段拼接/非 UTF-8 字符集/
 非法扩展值回退、路径分隔符与控制字符净化、重名序号、无文件名按路径命名、
 CTE 解码字节计数、畸形/未知 CTE 未编辑禁导、编辑后可导且取编辑后字节、
-ZIP 条目内容与错误码、嵌套 multipart 附件）。
+ZIP 条目内容与错误码、嵌套 multipart 附件），以及
+CID 引用检查（Content-ID 空白/尖括号规范化、引用百分号解码一次、
+方案名大小写不敏感而标识符区分大小写、src/href 提取、唯一匹配/缺失/
+重复歧义且不默认选取、嵌套 related 子树排除与最近作用域、无 related
+祖先报无作用域、非 UTF-8 HTML 报无法检查、按当前头部判断与编辑后重查）。
 
 ---
 

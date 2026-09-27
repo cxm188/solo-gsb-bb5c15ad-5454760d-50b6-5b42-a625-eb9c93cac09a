@@ -18,6 +18,10 @@ const attachSeen = new Set();
 const attachSeenExportable = new Set();
 let attachDebounce = null;
 
+// CID 引用检查：面板激活后（解析成功即激活）树发生变化会防抖自动重查
+let cidDebounce = null;
+let cidActivated = false;
+
 // 样本对比：A/B 两份解析结果快照（localStorage 持久化）与最近一次 diff 结果
 const SAMPLES = { a: null, b: null };
 let diffResult = null;
@@ -267,10 +271,12 @@ function headerRow(table, node, idx) {
   nameIn.addEventListener("input", () => {
     node.headers[idx].name = nameIn.value;
     scheduleAttachRefresh();
+    scheduleCidRefresh();
   });
   valIn.addEventListener("input", () => {
     node.headers[idx].value = valIn.value;
     scheduleAttachRefresh();
+    scheduleCidRefresh();
   });
   $("button", tr).addEventListener("click", () => {
     node.headers.splice(idx, 1);
@@ -449,6 +455,7 @@ function renderNode(node, depth) {
       node.body = ta.value;
       node.bodyEdited = true;
       scheduleAttachRefresh();
+      scheduleCidRefresh();
     });
     body.appendChild(ta);
   }
@@ -492,6 +499,7 @@ function rerenderTree() {
   reindexPaths(tree, "root");
   rootEl.appendChild(renderNode(tree, 0));
   scheduleAttachRefresh();
+  scheduleCidRefresh();
 }
 
 // ---------------------------------------------------------------- actions --
@@ -543,6 +551,7 @@ async function doParse() {
     renderIssues($("#issuesList"), data.issues);
     rerenderTree();
     loadAttachments({ resetSelection: true });
+    runCidCheck();
   } catch (e) {
     alert("解析失败：" + e.message);
   } finally {
@@ -808,6 +817,135 @@ async function downloadAttachmentsZip() {
   } finally {
     $("#btnDownloadZip").disabled = false;
   }
+}
+
+// --------------------------------------------------------- CID 引用检查 --
+
+const CID_STATUS_LABEL = {
+  ok: "唯一匹配",
+  missing: "缺失",
+  ambiguous: "重复歧义",
+  "no-scope": "无作用域",
+};
+
+function scheduleCidRefresh(delay = 500) {
+  // 正文/头部编辑、增删部分、CTE 切换等树变化后防抖重查（面板激活后才自动运行）
+  if (!tree || !cidActivated) return;
+  clearTimeout(cidDebounce);
+  cidDebounce = setTimeout(runCidCheck, delay);
+}
+
+async function runCidCheck() {
+  if (!tree) return;
+  clearTimeout(cidDebounce);
+  cidActivated = true;
+  reindexPaths(tree, "root");
+  const btn = $("#btnCidCheck");
+  btn.disabled = true;
+  try {
+    const data = await postJSON("/api/cid-check", { tree });
+    renderCidResults(data);
+  } catch (e) {
+    $("#cidMeta").textContent = "CID 检查失败：" + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderCidResults(data) {
+  const s = data.summary || {};
+  const bits = [`text/html 叶子 <b>${data.htmlCount}</b>`,
+                `cid: 引用 <b>${data.refCount}</b>`];
+  if (s.ok) bits.push(`唯一匹配 <b>${s.ok}</b>`);
+  if (s.missing) bits.push(`缺失 <b>${s.missing}</b>`);
+  if (s.ambiguous) bits.push(`歧义 <b>${s.ambiguous}</b>`);
+  if (s.noScope) bits.push(`无作用域 <b>${s.noScope}</b>`);
+  if (data.uncheckableCount) bits.push(`无法检查 <b>${data.uncheckableCount}</b>`);
+  $("#cidMeta").innerHTML = bits.join(" · ");
+
+  const list = $("#cidList");
+  list.innerHTML = "";
+  for (const h of (data.htmlParts || []).filter((p) => !p.checkable)) {
+    const li = document.createElement("li");
+    li.className = "cid-entry st-uncheckable";
+    li.innerHTML =
+      `<div class="cid-line1">` +
+      `<span class="cid-status uncheckable">无法检查</span>` +
+      `<code class="cid-ref">${escapeHtml(h.path)}</code>` +
+      `</div>` +
+      `<div class="cid-line2">${escapeHtml(h.reason || "")}</div>`;
+    list.appendChild(li);
+  }
+  for (const e of data.entries || []) list.appendChild(renderCidEntry(e));
+  if (!data.htmlCount) {
+    const li = document.createElement("li");
+    li.className = "cid-empty";
+    li.textContent = "当前树中没有 text/html 叶子。";
+    list.appendChild(li);
+  } else if (!list.children.length) {
+    const li = document.createElement("li");
+    li.className = "cid-empty";
+    li.textContent = "HTML 中未发现 cid: 引用。";
+    list.appendChild(li);
+  }
+
+  // 各作用域内可用的 Content-ID 清单（折叠展示，便于排查缺失/歧义）
+  const sc = $("#cidScopes");
+  sc.innerHTML = "";
+  for (const scope of data.scopes || []) {
+    const cids = scope.contentIds || [];
+    const det = document.createElement("details");
+    det.className = "cid-scope";
+    const summary = document.createElement("summary");
+    summary.textContent = `作用域 ${scope.path} · ${cids.length} 个 Content-ID`;
+    det.appendChild(summary);
+    const ul = document.createElement("ul");
+    ul.className = "cid-scope-list";
+    if (!cids.length) {
+      const li = document.createElement("li");
+      li.className = "muted";
+      li.textContent = "（作用域内没有带 Content-ID 的叶子）";
+      ul.appendChild(li);
+    }
+    for (const c of cids) {
+      const li = document.createElement("li");
+      li.innerHTML = `${escapeHtml(c.path)} → <b>${escapeHtml(c.contentId)}</b>` +
+        (c.duplicate ? ' <span class="cid-dup">（重复）</span>' : "");
+      ul.appendChild(li);
+    }
+    det.appendChild(ul);
+    sc.appendChild(det);
+  }
+}
+
+function renderCidEntry(e) {
+  const li = document.createElement("li");
+  li.className = "cid-entry st-" + e.status;
+  const status = CID_STATUS_LABEL[e.status] || e.status;
+  let cands = "";
+  if (e.status === "missing") {
+    cands = '<div class="cid-cands cid-muted">作用域内没有匹配的 Content-ID</div>';
+  } else if ((e.candidates || []).length) {
+    cands = '<div class="cid-cands">' +
+      e.candidates.map((c) =>
+        `<span class="cid-cand">→ ${escapeHtml(c.path)}` +
+        `（Content-ID: ${escapeHtml(c.contentId)}）</span>`).join("") +
+      (e.status === "ambiguous"
+        ? '<div class="cid-ambig-note">存在重复 Content-ID，未默认选取任何候选</div>'
+        : "") +
+      "</div>";
+  }
+  li.innerHTML =
+    `<div class="cid-line1">` +
+    `<span class="cid-status ${e.status}">${status}</span>` +
+    `<code class="cid-ref">${escapeHtml(e.reference)}</code>` +
+    `<span class="cid-attr">${escapeHtml(e.tag)} · ${escapeHtml(e.attribute)}</span>` +
+    `</div>` +
+    `<div class="cid-line2">来源 ${escapeHtml(e.sourcePath)}` +
+    ` · 标识符 ${escapeHtml(e.identifier)}` +
+    ` · 作用域 ${e.scopePath ? escapeHtml(e.scopePath) : "（无 multipart/related 祖先）"}</div>` +
+    cands;
+  return li;
 }
 
 // --------------------------------------------------------- sample compare --
@@ -1177,6 +1315,7 @@ function init() {
   $("#btnExportDiff").addEventListener("click", exportDiff);
   // 附件提取
   $("#btnRefreshAttach").addEventListener("click", () => loadAttachments());
+  $("#btnCidCheck").addEventListener("click", runCidCheck);
   $("#btnDownloadZip").addEventListener("click", downloadAttachmentsZip);
   $("#attachSelectAll").addEventListener("change", (e) => {
     if (e.target.checked) {

@@ -76,7 +76,22 @@
       </div>
     </div>
     <div class="hint tree-hint">直接修改头部、正文、boundary、preamble/epilogue；叶子节点可切换 Content-Transfer-Encoding（base64 / quoted-printable 等）。未改动的节点按原字节还原。</div>
-    <div id="treeRoot"></div>
+    <div class="tree-cid-grid">
+      <div id="treeRoot"></div>
+      <aside class="cid-panel" id="cidPanel" aria-label="CID 引用检查">
+        <div class="cid-panel-head">
+          <h3>CID 引用检查</h3>
+          <button id="btnCidCheck" class="btn btn-sm" type="button">检查 CID 引用</button>
+        </div>
+        <div class="hint cid-hint">仅检查合法 UTF-8 的 <code>text/html</code> 叶子：提取
+          <code>src</code> / <code>href</code> 中的 <code>cid:</code> 引用（纯文本解析，不加载资源），
+          在最近的 <code>multipart/related</code> 祖先内按 Content-ID（去尖括号、区分大小写）匹配；
+          编辑或增删后自动重查。</div>
+        <div id="cidMeta" class="parse-meta"></div>
+        <ul id="cidList" class="cid-list"></ul>
+        <div id="cidScopes"></div>
+      </aside>
+    </div>
 
     <div class="encode-bar">
       <label class="check">
