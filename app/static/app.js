@@ -18,6 +18,10 @@ const attachSeen = new Set();
 const attachSeenExportable = new Set();
 let attachDebounce = null;
 
+// CID 引用检查：最近一次 /api/cid-check 返回与防抖句柄（树编辑后自动重查）
+let cidResult = null;
+let cidDebounce = null;
+
 // 样本对比：A/B 两份解析结果快照（localStorage 持久化）与最近一次 diff 结果
 const SAMPLES = { a: null, b: null };
 let diffResult = null;
@@ -543,6 +547,7 @@ async function doParse() {
     renderIssues($("#issuesList"), data.issues);
     rerenderTree();
     loadAttachments({ resetSelection: true });
+    loadCidCheck();
   } catch (e) {
     alert("解析失败：" + e.message);
   } finally {
@@ -640,9 +645,154 @@ const ATTACH_DECODE_LABEL = {
 
 function scheduleAttachRefresh(delay = 400) {
   // 正文输入/头部编辑/CTE 切换等树变化后延迟刷新附件列表（不清空当前勾选）
+  // 同一批编辑也会重新运行 CID 引用检查（使用当前树）。
   if (!tree) return;
   clearTimeout(attachDebounce);
   attachDebounce = setTimeout(loadAttachments, delay);
+  scheduleCidRefresh(delay);
+}
+
+// ------------------------------------------------------------- CID check --
+
+const CID_STATUS_LABEL = {
+  unique: "唯一匹配",
+  missing: "缺失",
+  duplicate: "重复歧义",
+  "no-scope": "无作用域",
+};
+
+function scheduleCidRefresh(delay = 400) {
+  if (!tree) return;
+  clearTimeout(cidDebounce);
+  cidDebounce = setTimeout(loadCidCheck, delay);
+}
+
+async function loadCidCheck() {
+  if (!tree) {
+    $("#cidCard").classList.add("hidden");
+    return;
+  }
+  reindexPaths(tree, "root");
+  try {
+    const data = await postJSON("/api/cid-check", { tree });
+    cidResult = data;
+    $("#cidCard").classList.remove("hidden");
+    renderCid(data);
+  } catch (e) {
+    $("#cidMeta").textContent = "CID 检查失败：" + e.message;
+  }
+}
+
+function renderCid(data) {
+  const s = data.summary || {};
+  const root = $("#cidResult");
+  root.innerHTML = "";
+
+  const scopeCount = (data.scopes || []).length;
+  $("#cidMeta").innerHTML =
+    `HTML <b>${s.htmlDocuments || 0}</b>（可检查 <b>${s.checked || 0}</b> · ` +
+    `无法检查 <b>${s.uncheckable || 0}</b>）　·　作用域 <b>${scopeCount}</b>`;
+
+  if (!(data.documents || []).length) {
+    const div = document.createElement("div");
+    div.className = "cid-empty";
+    div.textContent = "当前树中没有任何 HTML 叶子（按 Content-Type 头部识别 text/html）。";
+    root.appendChild(div);
+    return;
+  }
+
+  for (const doc of data.documents || []) root.appendChild(renderCidDoc(doc));
+}
+
+function renderCidDoc(doc) {
+  const box = document.createElement("div");
+  box.className = "cid-doc" + (doc.status === "uncheckable" ? " cid-doc-blocked" : "");
+
+  const head = document.createElement("div");
+  head.className = "cid-doc-head";
+  const scope = doc.scope
+    ? `<span class="cid-scope-badge" title="最近的 multipart/related 祖先">` +
+      `作用域 ${escapeHtml(doc.scope.path)}</span>`
+    : `<span class="cid-scope-badge none" title="没有 multipart/related 祖先">无作用域</span>`;
+  const cid = doc.contentId
+    ? `<span class="cid-self" title="该 HTML 自身的 Content-ID">HTML · CID: ${escapeHtml(doc.contentId)}</span>`
+    : `<span class="cid-self">HTML（无 Content-ID）</span>`;
+  head.innerHTML =
+    `<span class="cid-doc-badge">${escapeHtml(doc.mediaType)}</span>` +
+    `<span class="cid-doc-path" title="来源路径">${escapeHtml(doc.path)}</span>` +
+    cid + scope;
+  box.appendChild(head);
+
+  if (doc.status === "uncheckable") {
+    const r = document.createElement("div");
+    r.className = "cid-reason";
+    r.textContent = "⛔ 无法检查：" + (doc.reason || "");
+    box.appendChild(r);
+    return box;
+  }
+
+  if (!(doc.references || []).length) {
+    const empty = document.createElement("div");
+    empty.className = "cid-empty cid-empty-inline";
+    empty.textContent = "未发现 cid: 引用（src / href）。";
+    box.appendChild(empty);
+    return box;
+  }
+
+  const ul = document.createElement("ul");
+  ul.className = "cid-ref-list";
+  for (const ref of doc.references) ul.appendChild(renderCidRef(ref, doc.scope));
+  box.appendChild(ul);
+  return box;
+}
+
+function renderCidRef(ref, scope) {
+  const li = document.createElement("li");
+  li.className = "cid-ref cid-" + ref.status;
+
+  const top = document.createElement("div");
+  top.className = "cid-ref-line1";
+  top.innerHTML =
+    `<span class="cid-status cid-status-${ref.status}">${escapeHtml(CID_STATUS_LABEL[ref.status] || ref.status)}</span>` +
+    `<span class="cid-ref-where" title="标签 / 属性 / 行号">${escapeHtml(ref.tag)}@${escapeHtml(ref.attr)}:${ref.line}</span>` +
+    `<code class="cid-ref-raw" title="属性原始值">${escapeHtml(ref.raw)}</code>`;
+  li.appendChild(top);
+
+  const detail = document.createElement("div");
+  detail.className = "cid-ref-detail";
+  if (ref.status === "no-scope") {
+    detail.innerHTML =
+      `<span class="cid-cid">引用 <code>${escapeHtml(ref.cid)}</code></span>` +
+      `<span class="cid-msg">该 HTML 不在任何 <code>multipart/related</code> 内，没有可匹配的作用域。</span>`;
+  } else {
+    detail.innerHTML =
+      `<span class="cid-cid">引用 <code>${escapeHtml(ref.cid)}</code></span>` +
+      `<span class="cid-msg">作用域 <code>${escapeHtml(scope ? scope.path : "")}</code> · ` +
+      `候选 ${ref.candidates.length} 个</span>`;
+    const ul = document.createElement("ul");
+    ul.className = "cid-cand-list";
+    for (const p of ref.candidates) {
+      const c = document.createElement("li");
+      const isMatch = ref.status === "unique" && p === ref.match;
+      c.className = isMatch ? "cid-cand cid-cand-match" : "cid-cand";
+      c.innerHTML = (isMatch ? "✓ " : "• ") + escapeHtml(p);
+      ul.appendChild(c);
+    }
+    detail.appendChild(ul);
+    if (ref.status === "missing") {
+      const m = document.createElement("div");
+      m.className = "cid-msg cid-msg-bad";
+      m.textContent = "作用域内没有带该 Content-ID 的叶子（引用缺失）。";
+      detail.appendChild(m);
+    } else if (ref.status === "duplicate") {
+      const m = document.createElement("div");
+      m.className = "cid-msg cid-msg-bad";
+      m.textContent = "多个叶子使用同一 Content-ID，结果歧义；不默认选取任何一个。";
+      detail.appendChild(m);
+    }
+  }
+  li.appendChild(detail);
+  return li;
 }
 
 async function loadAttachments({ resetSelection = false } = {}) {
@@ -1178,6 +1328,8 @@ function init() {
   // 附件提取
   $("#btnRefreshAttach").addEventListener("click", () => loadAttachments());
   $("#btnDownloadZip").addEventListener("click", downloadAttachmentsZip);
+  // CID 引用检查
+  $("#btnRefreshCid").addEventListener("click", () => loadCidCheck());
   $("#attachSelectAll").addEventListener("change", (e) => {
     if (e.target.checked) {
       for (const a of attachments) {

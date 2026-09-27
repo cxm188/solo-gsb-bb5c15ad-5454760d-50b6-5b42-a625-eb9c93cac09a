@@ -10,14 +10,16 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .attachments import build_attachments_zip, list_attachments
+from .cidcheck import check_cids
 from .diff import diff_results
 from .mime import encode_tree, parse_message
 
 app = FastAPI(
     title="MIME Multipart 报文检查器",
     description="按 RFC 2045/2046 解析嵌套 multipart 与 Content-Transfer-Encoding，"
-                "编辑后按原 boundary 规则与 CTE 折行重新编码；支持 RFC 2231 附件提取。",
-    version="1.2.0",
+                "编辑后按原 boundary 规则与 CTE 折行重新编码；支持 RFC 2231 附件提取"
+                "与 multipart/related 的 CID 引用静态检查。",
+    version="1.3.0",
 )
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -111,6 +113,12 @@ def api_attachments_zip(req: AttachmentsZipRequest):
                     media_type="application/zip",
                     headers={"Content-Disposition":
                              'attachment; filename="attachments.zip"'})
+
+
+@app.post("/api/cid-check")
+def api_cid_check(req: AttachmentsRequest):
+    """静态检查编辑树中 HTML 叶子的 cid: 引用（不执行、不加载任何资源）。"""
+    return JSONResponse(check_cids(req.tree))
 
 
 @app.get("/")

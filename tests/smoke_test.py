@@ -708,5 +708,137 @@ check("递归发现嵌套附件",
       == [("parts[0].parts[0]", "deep.dat")],
       [(a["path"], a["zipName"]) for a in la_n["attachments"]])
 
+# 19. CID 引用检查（multipart/related 作用域规则） -------------------------
+print("19) CID 引用检查")
+from app import cidcheck
+
+raw19 = (
+    b'Content-Type: multipart/mixed; boundary=OUT\r\n\r\n'
+    # parts[0]：HTML，不在任何 related 内 -> 无作用域
+    b'--OUT\r\nContent-Type: text/html\r\n\r\n'
+    b'<img src="cid:orphan">\r\n'
+    b'--OUT\r\n'
+    # parts[1]：multipart/related（外层作用域）
+    b'Content-Type: multipart/related; boundary=REL; type="text/html"\r\n\r\n'
+    b'--REL\r\nContent-Type: text/html; charset=utf-8\r\n'
+    b'Content-ID: <html-root@x>\r\n\r\n'
+    b'<img SRC=\'CID:Logo%20PNG\'>'
+    b'<a href="cid:missing-one">x</a>'
+    b'<img src="cid:dup">'
+    b'<img src="cid:case%2fSensitive">'
+    b'<img src="https://example.com/a.png">'
+    b'<!-- <img src="cid:in-comment"> -->\r\n'
+    b'--REL\r\nContent-Type: image/png\r\n'
+    b'Content-ID: < Logo PNG >\r\n'
+    b'Content-Transfer-Encoding: base64\r\n\r\n'
+    b'iVBORw0KGgo=\r\n'
+    b'--REL\r\nContent-Type: image/png\r\nContent-ID: <dup>\r\n\r\n'
+    b'dup-a\r\n'
+    b'--REL\r\nContent-Type: image/png\r\nContent-ID: <dup>\r\n\r\n'
+    b'dup-b\r\n'
+    b'--REL\r\n'
+    # parts[1].parts[4]：嵌套 multipart/related（内层作用域）
+    b'Content-Type: multipart/related; boundary=INREL\r\n\r\n'
+    b'--INREL\r\nContent-Type: text/html\r\n\r\n'
+    b'<img src="cid:inner">\r\n'
+    b'--INREL\r\nContent-Type: image/gif\r\nContent-ID: <inner>\r\n\r\n'
+    b'GIF89a\r\n'
+    b'--INREL--\r\n'
+    b'--REL--\r\n'
+    b'--OUT\r\n'
+    # parts[2]：非合法 UTF-8 的 text/html（base64 叶子）-> 无法检查
+    b'Content-Type: text/html\r\nContent-Transfer-Encoding: base64\r\n\r\n'
+    + base64.b64encode(b'<img src="cid:x">\xff\xfe binary') + b'\r\n'
+    b'--OUT\r\n'
+    # parts[3]：其他 html 类型 -> 无法检查
+    b'Content-Type: application/xhtml+xml\r\n\r\n'
+    b'<html/>'
+    b'--OUT--'
+)
+r19 = mime.parse_message(None, None, None, raw_base64=base64.b64encode(raw19).decode())
+check("19: 解析成功", r19["ok"], r19.get("issues"))
+cid = cidcheck.check_cids(r19["tree"])
+docs = {d["path"]: d for d in cid["documents"]}
+sm = cid["summary"]
+check("19: 发现 5 个 HTML 文档（4 text/html 中 3 个合法 UTF-8 + 1 xhtml）",
+      sm["htmlDocuments"] == 5 and sm["checked"] == 3 and sm["uncheckable"] == 2,
+      sm)
+
+# 无 related 祖先 -> 无作用域
+d0 = docs["parts[0]"]
+check("19: 无 related 祖先的 HTML 报无作用域",
+      d0["scope"] is None and len(d0["references"]) == 1
+      and d0["references"][0]["status"] == "no-scope"
+      and d0["references"][0]["cid"] == "orphan", d0)
+
+# 外层 related 内的 HTML
+d1 = docs["parts[1].parts[0]"]
+refs = {r["cid"]: r for r in d1["references"]}
+check("19: 作用域是最近 related 祖先 parts[1]",
+      d1["scope"] and d1["scope"]["path"] == "parts[1]", d1["scope"])
+check("19: 提取 4 条 cid: 引用（忽略 https 与注释文本）",
+      set(refs) == {"Logo PNG", "missing-one", "dup", "case/Sensitive"}, refs.keys())
+check("19: cid: 前缀大小写不敏感 + 百分号解码一次",
+      "Logo PNG" in refs and refs["Logo PNG"]["status"] == "unique"
+      and refs["Logo PNG"]["match"] == "parts[1].parts[1]", refs.get("Logo PNG"))
+check("19: Content-ID 去空白与外层尖括号",
+      refs["Logo PNG"]["candidates"] == ["parts[1].parts[1]"], refs.get("Logo PNG"))
+check("19: 缺失引用",
+      refs["missing-one"]["status"] == "missing"
+      and refs["missing-one"]["candidates"] == [], refs.get("missing-one"))
+check("19: 重复歧义列出全部候选且不选取",
+      refs["dup"]["status"] == "duplicate" and refs["dup"]["match"] is None
+      and refs["dup"]["candidates"] == ["parts[1].parts[2]", "parts[1].parts[3]"],
+      refs.get("dup"))
+check("19: 标识符区分大小写（小写 cid 匹配不到大写叶子，反之亦然）",
+      refs["case/Sensitive"]["status"] == "missing", refs.get("case/Sensitive"))
+check("19: 引用记录标签/属性/行号",
+      refs["Logo PNG"]["tag"] == "img" and refs["Logo PNG"]["attr"] == "src"
+      and refs["Logo PNG"]["line"] == 1, refs.get("Logo PNG"))
+
+# 嵌套 related：内层 HTML 只在内层作用域匹配；dup 叶子不属于内层候选
+d2 = docs["parts[1].parts[4].parts[0]"]
+rinner = {r["cid"]: r for r in d2["references"]}
+check("19: 嵌套 related 子树归内层作用域",
+      d2["scope"]["path"] == "parts[1].parts[4]"
+      and rinner["inner"]["status"] == "unique"
+      and rinner["inner"]["match"] == "parts[1].parts[4].parts[1]", d2)
+check("19: 外层 HTML 看不到嵌套 related 子树中的叶子",
+      "inner" not in refs, refs.keys())
+# 反向：内层 HTML 引用外层 dup（存在于外层但不在内层作用域）-> 缺失
+r19_tree = r19["tree"]
+inner_html = r19_tree["parts"][1]["parts"][4]["parts"][0]
+inner_html["body"] = inner_html["body"].replace("cid:inner", "cid:dup")
+inner_html["bodyEdited"] = True
+cid_b = cidcheck.check_cids(r19_tree)
+db = {d["path"]: d for d in cid_b["documents"]}
+rb = {r["cid"]: r["status"]
+      for r in db["parts[1].parts[4].parts[0]"]["references"]}
+check("19: 内层作用域不匹配外层 related 的叶子（嵌套子树排除）",
+      rb == {"dup": "missing"}, rb)
+
+# 无法检查：非合法 UTF-8 与其他 html 类型
+check("19: 非合法 UTF-8 的 text/html 报无法检查",
+      docs["parts[2]"]["status"] == "uncheckable"
+      and "UTF-8" in docs["parts[2]"]["reason"], docs["parts[2]"])
+check("19: application/xhtml+xml 报无法检查",
+      docs["parts[3]"]["status"] == "uncheckable"
+      and "text/html" in docs["parts[3]"]["reason"], docs["parts[3]"])
+check("19: 无法检查的 HTML 不提取引用", docs["parts[2]"]["references"] == [])
+
+# 作用域汇总
+sc = {s["path"]: s for s in cid["scopes"]}
+check("19: 作用域汇总（外/内两个 related）",
+      set(sc) == {"parts[1]", "parts[1].parts[4]"}
+      and sc["parts[1]"]["leafCount"] == 4
+      and sc["parts[1].parts[4]"]["leafCount"] == 2, sc)
+
+# 纯函数规范化
+check("19: normalize_content_id / decode_cid_ref 边界",
+      cidcheck.normalize_content_id("  <<a>>  ") == "<a>"
+      and cidcheck.normalize_content_id(None) == ""
+      and cidcheck.decode_cid_ref("CID:a%25b") == "a%b"
+      and cidcheck.decode_cid_ref("cid:%E4%BD%A0%E5%A5%BD") == "你好")
+
 print(f"\n结果: {PASS} 通过, {FAIL} 失败")
 sys.exit(1 if FAIL else 0)

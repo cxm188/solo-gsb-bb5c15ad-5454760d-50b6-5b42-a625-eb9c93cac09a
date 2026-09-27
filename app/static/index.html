@@ -12,7 +12,7 @@
     <span class="logo">▥</span>
     <div>
       <h1>MIME Multipart 报文检查器</h1>
-      <p class="sub">RFC 2045/2046 · 嵌套 multipart · Content-Transfer-Encoding · quoted 参数 · CRLF 边界 · 编辑后重新编码</p>
+      <p class="sub">RFC 2045/2046 · 嵌套 multipart · Content-Transfer-Encoding · quoted 参数 · CRLF 边界 · 编辑后重新编码 · multipart/related CID 引用检查</p>
     </div>
   </div>
   <div class="topbar-actions">
@@ -67,6 +67,7 @@
     <ul id="issuesList" class="issues"></ul>
   </section>
 
+  <div class="tree-cid-grid">
   <section class="card hidden" id="treeCard">
     <div class="card-head">
       <h2>2. 报文结构（可编辑）</h2>
@@ -86,6 +87,23 @@
       <button id="btnEncode" class="btn btn-primary" type="button">重新编码并下载</button>
     </div>
   </section>
+
+  <section class="card hidden" id="cidCard">
+    <div class="card-head">
+      <h2>CID 引用检查</h2>
+      <div class="head-actions">
+        <span id="cidMeta" class="parse-meta"></span>
+        <button id="btnRefreshCid" class="btn btn-sm" type="button">检查</button>
+      </div>
+    </div>
+    <div class="hint cid-hint">仅静态扫描 <code>text/html</code>（合法 UTF-8）叶子的
+      <code>src</code> / <code>href</code> 中 <code>cid:</code> 引用，不执行、不加载任何资源。
+      每个引用只在<b>最近的 <code>multipart/related</code> 祖先</b>作用域内匹配叶子
+      （嵌套 related 子树排除）；无祖先则报“无作用域”。
+      Content-ID 去空白与外层尖括号；引用去 <code>cid:</code> 后百分号解码一次，区分大小写。</div>
+    <div id="cidResult"></div>
+  </section>
+  </div>
 
   <section class="card hidden" id="attachmentsCard">
     <div class="card-head">

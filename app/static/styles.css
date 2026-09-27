@@ -354,6 +354,85 @@ textarea { resize: vertical; min-height: 180px; line-height: 1.5; }
   padding: 24px; border-top: 1px solid var(--border);
 }
 
+/* tree + CID panel side by side */
+.tree-cid-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 18px;
+  align-items: start;
+}
+.tree-cid-grid .card { margin-bottom: 18px; }
+#cidCard { position: sticky; top: 84px; }
+#cidCard .cid-hint { margin: -6px 0 12px; }
+.cid-doc {
+  border: 1px solid var(--border); border-left: 3px solid var(--primary);
+  border-radius: 8px; padding: 9px 12px; margin-bottom: 10px;
+  background: var(--panel-2);
+}
+.cid-doc-blocked { border-left-color: var(--warning); }
+.cid-doc-head {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  font-size: 12px;
+}
+.cid-doc-badge {
+  font-family: var(--mono); font-size: 10px; padding: 1px 7px; border-radius: 999px;
+  background: #243a2c; color: #92e7b4; border: 1px solid #335c41;
+}
+.cid-doc-path { font-family: var(--mono); color: var(--text); font-size: 12px; }
+.cid-self { color: var(--muted); font-size: 11px; }
+.cid-scope-badge {
+  margin-left: auto; font-family: var(--mono); font-size: 10px;
+  padding: 1px 8px; border-radius: 999px;
+  background: #22304a; color: #9cc0ff; border: 1px solid #30456b;
+}
+.cid-scope-badge.none { background: var(--panel); color: var(--muted); }
+.cid-ref-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.cid-ref {
+  border: 1px solid var(--border); border-radius: 7px;
+  padding: 7px 10px; margin-bottom: 7px; background: #0d1320;
+}
+.cid-ref.cid-unique { border-left: 3px solid var(--ok); }
+.cid-ref.cid-missing { border-left: 3px solid var(--error); }
+.cid-ref.cid-duplicate { border-left: 3px solid var(--warning); }
+.cid-ref.cid-no-scope { border-left: 3px solid var(--muted); }
+.cid-ref-line1 { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.cid-status {
+  font-size: 10px; font-weight: 700; padding: 1px 8px; border-radius: 5px;
+  flex: 0 0 auto;
+}
+.cid-status-unique { background: #16342a; color: var(--ok); }
+.cid-status-missing { background: var(--error-bg); color: var(--error); }
+.cid-status-duplicate { background: var(--warning-bg); color: var(--warning); }
+.cid-status-no-scope { background: var(--panel); color: var(--muted); }
+.cid-ref-where { color: var(--muted); font-size: 11px; font-family: var(--mono); }
+.cid-ref-raw {
+  font-size: 11px; color: #cfa9ff; word-break: break-all;
+}
+.cid-ref-detail { margin-top: 5px; font-size: 12px; }
+.cid-cid { margin-right: 8px; }
+.cid-cid code, .cid-msg code, .cid-hint code {
+  font-family: var(--mono); font-size: 11px; color: #cfa9ff;
+}
+.cid-msg { color: var(--muted); font-size: 11px; }
+.cid-msg-bad { color: var(--warning); margin-top: 4px; }
+.cid-cand-list {
+  list-style: none; margin: 5px 0 0; padding: 0;
+  font-family: var(--mono); font-size: 11px;
+}
+.cid-cand { color: var(--muted); padding: 1px 0 1px 10px; }
+.cid-cand-match { color: var(--ok); font-weight: 600; }
+.cid-reason { color: var(--warning); font-size: 12px; margin-top: 6px; }
+.cid-empty {
+  border: 1px dashed var(--border); border-radius: 8px;
+  padding: 12px; color: var(--muted); font-size: 12px; text-align: center;
+}
+.cid-empty-inline { padding: 8px; margin-top: 8px; text-align: left; }
+
+@media (max-width: 900px) {
+  .tree-cid-grid { grid-template-columns: 1fr; }
+  #cidCard { position: static; }
+}
+
 /* attachments */
 .attach-list { list-style: none; margin: 12px 0 0; padding: 0; }
 .attach-entry {

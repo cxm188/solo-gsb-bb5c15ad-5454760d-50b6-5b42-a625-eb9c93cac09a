@@ -35,6 +35,17 @@
   按节点路径命名；文件名中的路径分隔符与控制字符被清除，重名按遍历顺序加序号。
   ZIP 使用 **CTE 解码后的字节**（已编辑叶子取编辑后内容）；畸形或未知
   Content-Transfer-Encoding 的**未编辑**叶子禁止导出并说明原因。
+- 🔗 **CID 引用检查面板**：在编辑树旁的侧栏中静态检查
+  `multipart/related` 内 HTML 的 `cid:` 引用。仅扫描**合法 UTF-8 的
+  `text/html`** 叶子（其他含 html 的类型 / 非 UTF-8 正文报“无法检查”），
+  用 HTML 分词器提取各标签 `src` / `href` 中的 `cid:` 引用，**不执行、
+  不加载任何资源**。每个引用只在**最近的 `multipart/related` 祖先**作用域内
+  匹配叶子（嵌套 related 子树归内层作用域，不作为外层候选）；HTML 没有
+  related 祖先时报“无作用域”。`Content-ID` 去首尾空白与外层尖括号
+  （`<id>` → `id`），引用去 `cid:` 后**百分号解码一次**，标识符区分大小写。
+  逐条展示来源路径、原始引用、作用域、候选路径以及**唯一匹配 / 缺失 / 重复歧义**
+  （重复时列出全部候选但不默认选取）。点击「检查」使用当前树；正文、头部、
+  CTE、增删部分后自动重新检查并更新。
 
 ---
 
@@ -115,7 +126,19 @@ http://localhost:8000/docs 。
      内容；未编辑叶子若处于 `malformed`（畸形 base64/QP）或
      `passthrough`（未知 CTE）状态则**无法勾选**，并显示具体原因——
      在结构树中编辑该节点后即变为可导出。
-8. **样本对比**（页面底部「5. 样本对比」卡片）：
+8. **CID 引用检查**（结构树右侧侧栏，解析后自动出现）：
+   - 只检查 `Content-Type: text/html` 且正文为**合法 UTF-8** 的叶子：
+     `application/xhtml+xml` 等其他 html 类型、二进制（base64 编辑通道）或
+     非法 UTF-8 的 text/html 一律显示「无法检查」与原因，不做猜测；
+   - 逐条引用展示：**来源路径**、标签/属性/行号与原始属性值、
+     **解码后的 CID**、**作用域**（最近 `multipart/related` 祖先的路径；
+     无祖先显示「无作用域」）、该作用域内的**候选路径**，以及结论徽章
+     **✓ 唯一匹配**（绿色）/ **缺失**（红色）/ **重复歧义**（黄色，
+     列出全部候选，不默认选任何一个）/ **无作用域**（灰色）；
+   - 点击侧栏右上角「检查」立即使用**当前树**重新检查；在结构树中编辑正文、
+     头部（含 Content-ID / Content-Type）、切换 CTE、新增或删除部分后，
+     停止输入片刻自动重查（与附件列表共用防抖）。
+9. **样本对比**（页面底部「5. 样本对比」卡片）：
    - 解析一份报文后点击结构区右上角的 **存为样本 A**；再解析（或编辑后重新解析）
      另一份报文，点击 **存为样本 B**。样本保存在浏览器 localStorage，刷新不丢失；
    - 点击 **开始对比**，查看按树路径对齐的差异清单（新增 / 删除 / 修改 / 未变化，
@@ -401,6 +424,77 @@ DEFLATE 压缩；非 ASCII 文件名置 UTF-8 语言编码标志位）：
 （`EMPTY_SELECTION`）、路径在当前树中不存在（`STALE_PATHS`）或所选节点
 当前不可导出（`NOT_EXPORTABLE`）时返回 `400` 与 JSON 错误体。
 
+### `POST /api/cid-check`
+
+CID 引用静态检查：请求体只有 `/api/parse` 返回（可能已被前端修改）的
+`tree`。按节点**当前头部**判断媒体类型与 `Content-ID`，正文从叶子的
+**正文编辑通道**（`body` + `bodyEncoding`，即 CTE 解码后的可编辑内容）
+还原字节；只检查**合法 UTF-8 的 `text/html`**，其他含 "html" 的类型
+（如 `application/xhtml+xml`）与非合法 UTF-8 的 text/html 报“无法检查”。
+使用标准库 `html.parser` 仅做分词，提取各标签 `src` / `href` 属性中
+`cid:`（大小写不敏感）开头的引用，**不执行脚本、不加载任何资源**。
+
+```json
+{ "tree": { /* 当前树，可修改 */ } }
+```
+
+响应（节选）：
+
+```json
+{
+  "ok": true,
+  "summary": {
+    "htmlDocuments": 3, "checked": 2, "uncheckable": 1,
+    "references": 4, "unique": 1, "missing": 1,
+    "duplicate": 1, "noScope": 1
+  },
+  "scopes": [
+    { "path": "parts[1]", "mediaType": "multipart/related", "leafCount": 4 }
+  ],
+  "documents": [
+    {
+      "path": "parts[1].parts[0]",
+      "mediaType": "text/html",
+      "contentId": "html-root@x",
+      "scope": { "path": "parts[1]", "mediaType": "multipart/related" },
+      "status": "checked",
+      "reason": null,
+      "references": [
+        {
+          "tag": "img", "attr": "src", "line": 1,
+          "raw": "CID:Logo%20PNG", "cid": "Logo PNG",
+          "status": "unique",
+          "candidates": ["parts[1].parts[1]"],
+          "match": "parts[1].parts[1]"
+        },
+        { "tag": "img", "attr": "src", "line": 1,
+          "raw": "cid:dup", "cid": "dup",
+          "status": "duplicate", "match": null,
+          "candidates": ["parts[1].parts[2]", "parts[1].parts[3]"] },
+        { "tag": "a", "attr": "href", "line": 1,
+          "raw": "cid:missing-one", "cid": "missing-one",
+          "status": "missing", "candidates": [], "match": null }
+      ]
+    },
+    { "path": "parts[2]", "mediaType": "text/html", "contentId": null,
+      "scope": null, "status": "uncheckable",
+      "reason": "正文不是合法 UTF-8（以base64 编辑通道承载…），无法按 text/html 检查 cid: 引用",
+      "references": [] }
+  ]
+}
+```
+
+规则与字段：
+
+| 项 | 说明 |
+| --- | --- |
+| 作用域 | 每个 HTML 只在**最近的 `multipart/related` 祖先**内匹配；嵌套 related 子树中的叶子归内层作用域，不作为外层候选；无祖先时引用 `status` 为 `no-scope`，文档 `scope` 为 `null` |
+| 候选 | 作用域内 `Content-ID` 与引用相等（**区分大小写**）的叶子路径，按树先序排列；`status` 为 `unique`（恰好 1 个，`match` 给出路径）/ `missing`（0 个）/ `duplicate`（多于 1 个，`match` 为 `null`，不默认选取） |
+| Content-ID | 去首尾空白并剥去**一对外层**尖括号（`<id>` → `id`，`<<a>>` → `<a>`）；取第一个 `Content-ID` 头 |
+| 引用解码 | 属性值以 `cid:`（大小写不敏感）开头才提取；去前缀后用百分号解码**一次**（`%25` → `%`），不再按空白裁剪；`tag`/`attr` 已小写，`line` 为 HTML 内行号，`raw` 为原始属性值 |
+| 非引用 | `http(s):` URL、CSS 中的 `url(cid:…)`、注释文本均不扫描（只识别标签属性）；`srcset` 等其他属性不提取 |
+| 叶子 | 仅叶子（`kind: "part"`）参与 Content-ID 匹配；multipart 容器无 Content-ID |
+
 ### `GET /api/health`
 
 返回 `{"ok": true}`，供容器健康检查使用。
@@ -413,14 +507,15 @@ DEFLATE 压缩；非 ASCII 文件名置 UTF-8 语言编码标志位）：
 .
 ├── app/
 │   ├── __init__.py
-│   ├── main.py              # FastAPI 应用、/api/parse、/api/encode、/api/diff、/api/attachments、静态文件
+│   ├── main.py              # FastAPI 应用：/api/parse、/api/encode、/api/diff、/api/attachments、/api/cid-check、静态文件
 │   ├── mime.py              # 零第三方依赖的 MIME 解析 / 重新编码核心
 │   ├── attachments.py       # RFC 2231 文件名解析、附件发现与 ZIP 打包（标准库 zipfile）
+│   ├── cidcheck.py          # multipart/related 作用域内的 cid: 引用静态检查（标准库 html.parser）
 │   ├── diff.py              # 样本对比：按树路径对齐的字段级差异计算
 │   └── static/
 │       ├── index.html       # 页面结构
 │       ├── styles.css       # 深色主题样式
-│       └── app.js           # 原生 JS：示例、树形编辑器、附件提取、样本对比、下载
+│       └── app.js           # 原生 JS：示例、树形编辑器、附件提取、CID 引用检查、样本对比、下载
 ├── tests/
 │   └── smoke_test.py        # 解析/编码/对比端到端测试（仅需 Python 标准库）
 ├── requirements.txt
@@ -448,7 +543,11 @@ Content-Transfer-Encoding（base64 / quoted-printable / 7bit / 8bit / binary
 RFC 2231 `filename*` 单值与 `filename*0*` 分段拼接/非 UTF-8 字符集/
 非法扩展值回退、路径分隔符与控制字符净化、重名序号、无文件名按路径命名、
 CTE 解码字节计数、畸形/未知 CTE 未编辑禁导、编辑后可导且取编辑后字节、
-ZIP 条目内容与错误码、嵌套 multipart 附件）。
+ZIP 条目内容与错误码、嵌套 multipart 附件），以及
+CID 引用检查（最近 related 祖先作用域、嵌套 related 子树排除、
+无祖先无作用域、Content-ID 去尖括号与空白、cid 前缀大小写不敏感、
+百分号解码一次、标识符区分大小写、唯一/缺失/重复歧义、非 UTF-8 与
+其他 html 类型无法检查、标签/属性/行号记录）。
 
 ---
 
